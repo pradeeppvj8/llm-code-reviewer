@@ -47,6 +47,9 @@ python review.py --diff path/to/diff.patch
 | `severity` | string | One of `nit`, `minor`, `major`, `critical`  |
 | `comment`  | string | One concrete, actionable review comment     |
 
+Machine-readable source of truth: `src/llm_code_reviewer/contract.py`
+(`Finding`, `SEVERITIES`, `load_diff`, `parse_review_json`).
+
 ## Setup
 
 Both providers have a free API tier — get keys at
