@@ -27,8 +27,6 @@ __DIFF__
 ```\
 """
 
-import sys
-
 def build_review_prompt(diff: str) -> str:
     """Slot ``diff`` into the template and return the full prompt."""
     return PROMPT_TEMPLATE.replace("__DIFF__", diff)
@@ -44,10 +42,9 @@ def _call_groq(prompt: str, model: str, api_key: str) -> str:
             {"role": "user", "content": prompt}, 
         ],
         temperature=0,
-        max_completion_tokens=2048,
+        max_completion_tokens=4096,
         reasoning_effort="low"
     )
-    #print("DEBUG Response: ", repr(response.choices[0]), file=sys.stderr)
     return response.choices[0].message.content
 
 def _call_gemini(prompt: str, model: str, api_key: str) -> str:

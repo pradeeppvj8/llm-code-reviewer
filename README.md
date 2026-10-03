@@ -2,8 +2,8 @@
 
 AI Code Review CLI — Phase 1 project (LLM Foundations & Prompt Engineering).
 
-**Status: Week 1 (Friday setup).** Repo skeleton only — the MVP single-shot
-script (`review.py`) lands in the Saturday/Sunday build block.
+**Status: Week 1 done.** Single-shot MVP works end to end on both providers
+(Groq + Gemini) — tested on 3 sample diffs.
 
 ## Problem statement
 
@@ -21,11 +21,17 @@ No function calling or streaming yet — those land in Weeks 3–4 of Phase 1.
 
 ## Input / output contract
 
-**Input:** path to a diff file
+**Input:** path to a diff file, plus provider choice
 
 ```bash
-python review.py --diff path/to/diff.patch
+python review.py --diff path/to/diff.patch --llm groq    # default
+python review.py --diff path/to/diff.patch --llm gemini
 ```
+
+| Flag | Values | Default | Notes |
+|------|--------|---------|-------|
+| `--diff` | path to `.patch` file | (required) | Loaded via `load_diff` — must exist, non-empty |
+| `--llm` | `groq`, `gemini` (case-insensitive) | `groq` | Groq uses `openai/gpt-oss-20b` (`reasoning_effort="low"`, `max_completion_tokens=4096`); Gemini uses `gemini-3.5-flash-lite` (`max_output_tokens=8192`). Keys come from `.env` (`GROQ_API_KEY` / `GEMINI_API_KEY`). |
 
 **Output:** JSON list of findings, one object per issue:
 
@@ -65,22 +71,31 @@ uv run pytest          # run the tests
 ## Example output
 
 ```text
-$ python review.py --diff samples/auth.patch
-[MAJOR] src/auth.py:42 — Password is compared with == instead of a constant-time compare.
-[NIT]   src/auth.py:57 — Typo in error message: "occured" -> "occurred".
+$ python review.py --diff samples/review_sample.patch --llm gemini
+[CRITICAL] src/auth.py:47 - Passwords must not be compared directly in plaintext; use a secure hash verification function like `check_password_hash`.
+[NIT] src/auth.py:57 - Typo in error message: 'occured' should be spelled 'occurred'.
+[CRITICAL] src/auth.py:64 - Reset tokens must be cryptographically random and unguessable (e.g., using `secrets.token_urlsafe()`), not derived predictably from `user_id`.
 ```
+
+Exit codes: `0` findings printed (or `No Issues Found`), `2` usage/config error
+(bad `--llm`, missing key, unreadable diff), `1` LLM call or output-parse failure.
 
 ## Layout
 
 ```text
 .
-├── review.py              # CLI entry point (MVP, weekend build)
+├── review.py              # CLI entry point: --diff + --llm, error handling, exit codes
 ├── pyproject.toml         # dependencies + project metadata (uv)
 ├── requirements.txt       # same runtime deps for pip installs
 ├── .env.example           # copy to .env, fill in keys (never committed)
 ├── .gitignore
+├── samples/               # sample diffs for MVP testing (review_sample, wisdom_rag, wisdom_rag_2)
 ├── src/llm_code_reviewer/ # package code
+│   ├── contract.py        # I/O contract: Finding, SEVERITIES, load_diff, parse/dump_review_json
+│   ├── reviewer.py        # prompt template, Groq/Gemini callers, extract_json, format_findings
 │   └── config.py          # loads .env, exposes GEMINI_API_KEY / GROQ_API_KEY
 └── tests/
+    ├── test_contract.py   # contract validation tests
+    ├── test_reviewer.py   # prompt / fence-strip / pretty-print tests
     └── test_smoke.py
 ```
