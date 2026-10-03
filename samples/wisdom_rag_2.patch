@@ -1,0 +1,41 @@
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..a025d4e
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,35 @@
++# macOS and editor files
++.DS_Store
++.idea/
++.vscode/
++
++# Python environments, bytecode, and tool caches
++.venv/
++venv/
++env/
++__pycache__/
++*.py[cod]
++*.egg-info/
++.pytest_cache/
++.mypy_cache/
++.ruff_cache/
++.coverage
++htmlcov/
++
++# Local configuration and secrets
++.env
++.env.*
++!.env.example
++
++# Runtime output: reproducible from the tracked corpus and source code
++logs/
++data/cache/
++data/index/
++data/chroma/
++data/vectorstore/
++
++# Build and temporary files
++build/
++dist/
++tmp/
++*.log

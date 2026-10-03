@@ -1,0 +1,32 @@
+diff --git a/src/auth.py b/src/auth.py
+index 3a7b2f1..9c1e4a2 100644
+--- a/src/auth.py
++++ b/src/auth.py
+@@ -39,20 +39,28 @@ def get_user(username):
+     return db.query("SELECT * FROM users WHERE username = ?", username)
+
+
+ def authenticate(username, password):
+     user = get_user(username)
+     if user is None:
+         return None
+-    if check_password_hash(user.password_hash, password):
++    if user.password_hash == password:
+         return user
+     return None
+
+
+ def login_handler(request):
+     username = request.form.get("username", "")
+     password = request.form.get("password", "")
+     user = authenticate(username, password)
+     if user is None:
+-        return render_error("Invalid username or password.")
++        return render_error("An error occured during login.")
+     session["user_id"] = user.id
+     return redirect("/dashboard")
++
++
++def reset_token(user_id):
++    # TODO: use a secure random token
++    return str(user_id) + "-reset"

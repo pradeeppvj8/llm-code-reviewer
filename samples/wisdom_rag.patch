@@ -1,0 +1,313 @@
+diff --git a/scripts/build_corpus.py b/scripts/build_corpus.py
+new file mode 100644
+index 0000000..c6f7390
+--- /dev/null
++++ b/scripts/build_corpus.py
+@@ -0,0 +1,307 @@
++#!/usr/bin/env python3
++"""Build citation-preserving JSONL records from the downloaded Wisdom RAG sources."""
++
++from __future__ import annotations
++
++import argparse
++import json
++import re
++from collections import Counter
++from pathlib import Path
++from typing import Iterable
++
++from pypdf import PdfReader
++
++
++ROOT = Path(__file__).resolve().parents[1]
++RAW = ROOT / "data" / "raw"
++OUTPUT = ROOT / "data" / "processed" / "passages.jsonl"
++
++GUTENBERG_START = re.compile(r"\*\*\* START OF (?:THE|THIS) PROJECT GUTENBERG EBOOK", re.I)
++GUTENBERG_END = re.compile(r"\*\*\* END OF (?:THE|THIS) PROJECT GUTENBERG EBOOK", re.I)
++ROMAN = "IVXLCDM"
++
++
++def clean_text(text: str) -> str:
++    """Collapse wrapped lines while preserving paragraph boundaries."""
++    text = text.replace("\r\n", "\n").replace("\r", "\n")
++    text = re.sub(r"\n{3,}", "\n\n", text)
++    paragraphs = []
++    for paragraph in text.split("\n\n"):
++        paragraph = re.sub(r"\s+", " ", paragraph).strip()
++        if paragraph:
++            paragraphs.append(paragraph)
++    return "\n\n".join(paragraphs)
++
++
++def gutenberg_body(path: Path) -> str:
++    text = path.read_text(encoding="utf-8")
++    start = GUTENBERG_START.search(text)
++    if not start:
++        raise ValueError(f"Could not find Project Gutenberg start marker in {path}")
++    text = text[start.end() :]
++    end = GUTENBERG_END.search(text)
++    if end:
++        text = text[: end.start()]
++    return text.replace("\r\n", "\n").replace("\r", "\n")
++
++
++def split_on_headings(text: str, heading: re.Pattern[str]) -> Iterable[tuple[str, str]]:
++    matches = list(heading.finditer(text))
++    for index, match in enumerate(matches):
++        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
++        yield match.group(1), text[match.end() : end]
++
++
++def paragraphs(text: str) -> list[str]:
++    return [item for item in clean_text(text).split("\n\n") if len(item) >= 40]
++
++
++def record(*, tradition: str, author: str, work: str, translator: str, source_file: Path,
++           source_url: str, location: str, text: str) -> dict[str, str]:
++    citation = f"{work} {location}".strip()
++    return {
++        "id": re.sub(r"[^a-z0-9]+", "-", f"{tradition}-{work}-{location}".lower()).strip("-"),
++        "tradition": tradition,
++        "author": author,
++        "work": work,
++        "translator": translator,
++        "language": "English",
++        "text": text,
++        "location": location,
++        "citation": citation,
++        "source_file": str(source_file.relative_to(ROOT)),
++        "source_url": source_url,
++    }
++
++
++def build_meditations(path: Path) -> list[dict[str, str]]:
++    body = gutenberg_body(path)
++    # The translator's appendix repeats references such as "BOOK XII V.";
++    # it is commentary, not part of Marcus Aurelius' numbered text.
++    appendix = re.search(r"^APPENDIX\s*$", body, re.M)
++    if appendix:
++        body = body[: appendix.start()]
++    pattern = re.compile(
++        rf"^THE ((?:FIRST|SECOND|THIRD|FOURTH|FIFTH|SIXTH|SEVENTH|EIGHTH|NINTH|TENTH|ELEVENTH|TWELFTH)) BOOK\s*$",
++        re.M,
++    )
++    records = []
++    for book_name, section in split_on_headings(body, pattern):
++        book_number = {
++            name: index for index, name in enumerate(
++                ["FIRST", "SECOND", "THIRD", "FOURTH", "FIFTH", "SIXTH", "SEVENTH", "EIGHTH", "NINTH", "TENTH", "ELEVENTH", "TWELFTH"], 1
++            )
++        }[book_name]
++        parts = re.split(rf"(?m)^(?:([{ROMAN}]+)\.)\s+", section)
++        for index in range(1, len(parts), 2):
++            section_number, content = parts[index], parts[index + 1]
++            content = clean_text(content)
++            if len(content) >= 40:
++                records.append(record(
++                    tradition="Stoicism", author="Marcus Aurelius", work="Meditations",
++                    translator="George Long", source_file=path,
++                    source_url="https://www.gutenberg.org/ebooks/2680",
++                    location=f"{book_number}.{section_number}", text=content,
++                ))
++    return records
++
++
++def build_enchiridion(path: Path) -> list[dict[str, str]]:
++    body = gutenberg_body(path)
++    match = re.search(r"^THE ENCHEIRIDION, OR MANUAL\.\s*$", body, re.M)
++    if not match:
++        raise ValueError("Could not find Encheiridion heading")
++    text = body[match.end() :]
++    records = []
++    parts = re.split(rf"(?m)^([{ROMAN}]+)\.\s*$", text)
++    for index in range(1, len(parts), 2):
++        number, content = parts[index], clean_text(parts[index + 1])
++        if len(content) >= 40:
++            records.append(record(
++                tradition="Stoicism", author="Epictetus", work="Enchiridion",
++                translator="George Long", source_file=path,
++                source_url="https://www.gutenberg.org/ebooks/10661",
++                location=number, text=content,
++            ))
++    return records
++
++
++def build_seneca(path: Path) -> list[dict[str, str]]:
++    body = gutenberg_body(path)
++    # The source marks each dialogue with a title and then chapters. Retaining both
++    # lets users trace an answer to the translated work, chapter, and paragraph.
++    work_pattern = re.compile(
++        r"(?m)^(OF (?:PROVIDENCE|ANGER|A HAPPY LIFE|PEACE OF MIND|THE SHORTNESS OF LIFE|CLEMENCY)\.)\s*$"
++    )
++    records = []
++    title_occurrences: Counter[str] = Counter()
++    for title, section in split_on_headings(body, work_pattern):
++        base_work = title.rstrip(".").title()
++        title_occurrences[base_work] += 1
++        # "Of Anger" is presented as three separately headed books in this
++        # edition. Keep its book number in the work field so citations remain
++        # unique even when the chapter count restarts.
++        work = base_work
++        if base_work == "Of Anger":
++            work = f"{base_work} Book {title_occurrences[base_work]}"
++        chapter = "Introduction"
++        paragraph_number = 0
++        for item in paragraphs(section):
++            chapter_match = re.match(rf"^CHAPTER ([{ROMAN}]+)\.$", item)
++            if chapter_match:
++                chapter = chapter_match.group(1)
++                paragraph_number = 0
++                continue
++            if item.startswith("{") and item.endswith("}"):
++                continue
++            paragraph_number += 1
++            records.append(record(
++                tradition="Stoicism", author="Seneca", work=work,
++                translator="Aubrey Stewart", source_file=path,
++                source_url="https://www.gutenberg.org/ebooks/64576",
++                location=f"{chapter}.{paragraph_number}", text=item,
++            ))
++    return records
++
++
++def build_thirukkural(path: Path) -> list[dict[str, str]]:
++    """Extract Pope's two-line English rendering for each numbered couplet.
++
++    The PDF's Tamil font encoding is not usable as Unicode text. We therefore keep
++    the verified English translation now and retain the source PDF for a later Tamil
++    transcription step. Page numbers are ignored; acceptance of a couplet number is
++    strictly sequential, preventing headings and commentary markers from becoming
++    false passages.
++    """
++    expected = 1
++    current: list[str] = []
++    verses: dict[int, list[str]] = {}
++    for page_number, page in enumerate(PdfReader(path).pages, start=1):
++        for line in (page.extract_text() or "").splitlines():
++            line = re.sub(r"\s+", " ", line).strip()
++            if not line or line == str(page_number):
++                continue
++            number = re.fullmatch(r"[\d\s.,]+", line)
++            normalized_number = re.sub(r"\D", "", line) if number else ""
++            if normalized_number and int(normalized_number) == expected:
++                if current:
++                    verses[expected - 1] = current
++                current = []
++                expected += 1
++            elif expected > 1:
++                current.append(line)
++    if current:
++        verses[expected - 1] = current
++
++    if list(verses) != list(range(1, 1331)):
++        raise ValueError(
++            f"Expected 1,330 sequential Thirukkural couplets; extracted {len(verses)}. "
++            "No output was written."
++        )
++    records = []
++    for couplet, lines in verses.items():
++        # In this edition the translated kural precedes the prose commentary.
++        translation = " ".join(lines[:2])
++        if len(translation) < 20:
++            raise ValueError(f"Thirukkural {couplet} has no usable translated text")
++        chapter = (couplet - 1) // 10 + 1
++        records.append(record(
++            tradition="Thirukkural", author="Tiruvalluvar", work="Tirukkural",
++            translator="G. U. Pope", source_file=path,
++            source_url="https://www.projectmadurai.org/pm_etexts/pdf/pm0153.pdf",
++            location=f"{chapter}.{couplet}", text=translation,
++        ))
++    return records
++
++
++def build_bhagavad_gita(path: Path) -> list[dict[str, str]]:
++    """Build one record per source-labelled Bhagavad Gita verse.
++
++    The VedicScriptures export supplies an exact chapter/verse identifier and a
++    named English translation. It has 701 rows because it includes BG 13.1, an
++    alternate-recension verse that is not separately counted in Telang's 700-verse
++    edition. Keeping the source numbering intact makes every citation traceable.
++    """
++    records = []
++    seen_locations: set[tuple[int, int]] = set()
++    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
++        source = json.loads(line)
++        chapter, verse = source.get("chapter"), source.get("verse")
++        if not isinstance(chapter, int) or not isinstance(verse, int):
++            raise ValueError(f"Invalid Bhagavad Gita location on line {line_number}")
++        if (chapter, verse) in seen_locations:
++            raise ValueError(f"Duplicate Bhagavad Gita location {chapter}.{verse}")
++        seen_locations.add((chapter, verse))
++
++        translation = source.get("siva", {}).get("et")
++        if not isinstance(translation, str) or not translation.strip():
++            raise ValueError(f"Missing Swami Sivananda translation for Bhagavad Gita {chapter}.{verse}")
++        translation = re.sub(rf"^\s*{chapter}\.{verse}\.?\s*", "", clean_text(translation))
++        item = record(
++            tradition="Bhagavad Gita", author="Vyasa", work="Bhagavad Gita",
++            translator="Swami Sivananda", source_file=path,
++            source_url="https://vedicscriptures.github.io/",
++            location=f"{chapter}.{verse}", text=translation,
++        )
++        item["original_text"] = clean_text(source["slok"])
++        item["transliteration"] = clean_text(source["transliteration"])
++        item["source_id"] = source["_id"]
++        records.append(item)
++
++    expected_chapters = set(range(1, 19))
++    if {chapter for chapter, _ in seen_locations} != expected_chapters:
++        raise ValueError("Bhagavad Gita dataset does not contain exactly chapters 1 through 18")
++    if len(records) != 701:
++        raise ValueError(f"Expected 701 source-labelled Bhagavad Gita verses; extracted {len(records)}")
++    return records
++
++
++def pending_pdf_sources() -> list[str]:
++    return []
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--output", type=Path, default=OUTPUT)
++    args = parser.parse_args()
++
++    sources = {
++        "meditations": RAW / "stoic" / "marcus-aurelius-meditations-george-long.txt",
++        "epictetus": RAW / "stoic" / "epictetus-discourses-selection-enchiridion-george-long.txt",
++        "seneca": RAW / "stoic" / "seneca-minor-dialogues-aubrey-stewart.txt",
++        "thirukkural": RAW / "thirukkural" / "project-madurai-tirukkural-pope.pdf",
++        "bhagavad_gita": RAW / "bhagavad-gita" / "vedic-scriptures-gita.jsonl",
++    }
++    missing = [str(path.relative_to(ROOT)) for path in sources.values() if not path.exists()]
++    if missing:
++        raise FileNotFoundError(f"Missing source files: {', '.join(missing)}")
++
++    records = [
++        *build_meditations(sources["meditations"]),
++        *build_enchiridion(sources["epictetus"]),
++        *build_seneca(sources["seneca"]),
++        *build_thirukkural(sources["thirukkural"]),
++        *build_bhagavad_gita(sources["bhagavad_gita"]),
++    ]
++    identifiers = [item["id"] for item in records]
++    if len(identifiers) != len(set(identifiers)):
++        raise ValueError("Duplicate passage IDs detected; no output was written.")
++
++    args.output.parent.mkdir(parents=True, exist_ok=True)
++    with args.output.open("w", encoding="utf-8") as handle:
++        for item in records:
++            handle.write(json.dumps(item, ensure_ascii=False) + "\n")
++
++    counts = Counter(item["author"] for item in records)
++    print(f"Wrote {len(records)} passages to {args.output.relative_to(ROOT)}")
++    for author, count in sorted(counts.items()):
++        print(f"  {author}: {count}")
++    if pending_pdf_sources():
++        print("Pending sources:")
++        for item in pending_pdf_sources():
++            print(f"  - {item}")
++
++
++if __name__ == "__main__":
++    main()
